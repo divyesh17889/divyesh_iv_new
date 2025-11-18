@@ -183,7 +183,7 @@ def scan_symbols(symbols, thr=5.0, side="ALL", overrides=None):
     """
     if overrides is None:
         overrides = {}
-    symbols = [s.upper().strip() for s in (symbols or []) if s][:210]
+    symbols = [s.upper().strip() for s in (symbols or []) if s]
     out = []
     for sym in symbols:
         try:
@@ -309,7 +309,7 @@ def api_oc():
 @app.route("/api/breakout_scan", methods=["POST"])
 def api_breakout_scan():
     data = request.get_json(silent=True) or {}
-    symbols = [s.upper().strip() for s in (data.get("symbols") or []) if s][:210]
+    symbols = [s.upper().strip() for s in (data.get("symbols") or []) if s]
     if not symbols:
         return jsonify({"error": "At least one symbol required"}), 400
     try:
@@ -706,30 +706,29 @@ if __name__ == "__main__":
 
 
 
-# ------------------ Premium Surge Endpoint ------------------
-PREV_SURGE_CACHE = {}  # key: (symbol, expiry) -> { strike: { "CE": prev, "PE": prev } }
+
+# ==================== GOD MODE PREMIUM SURGE DETECTOR v10 ====================
+from datetime import datetime
+from collections import deque
+
+# Global cache with history (last 5 prices) + timestamp
+PREV_SURGE_CACHE = {}  # (sym, expiry) → {strike: {"CE": deque([prices]), "PE": deque([prices]), "ts": datetime}}
+
+LOT_SIZES = {
+    "NIFTY": 25, "BANKNIFTY": 15, "FINNIFTY": 25, "MIDCPNIFTY": 50,
+    "SENSEX": 10, "SENSEX50": 15, "INDIAVIX": 100
+}
+
+def get_lot_size(sym): return LOT_SIZES.get(sym.upper(), 50)
 
 @app.route("/api/premium_surge", methods=["POST"])
 def api_premium_surge():
-    """
-    Detect sudden premium surges in OTM options.
-    Expects JSON: { symbols: [...], min_pct: 200, min_lots: 1, expiry_overrides: {...} }
-    Returns: { data: [ {symbol, strike, side, prev, curr, pct, volume, lots, expiry}, ... ] }
-    """
     data = request.get_json(silent=True) or {}
-    symbols = [s.upper().strip() for s in (data.get("symbols") or []) if s][:210]
+    symbols = [s.upper().strip() for s in (data.get("symbols") or []) if s][:200]
     if not symbols:
         return jsonify({"data": []})
 
-    try:
-        min_pct = float(data.get("min_pct", 200))
-    except:
-        min_pct = 200.0
-    try:
-        min_lots = float(data.get("min_lots", 1.0))
-    except:
-        min_lots = 1.0
-
+    min_pct = float(data.get("min_pct", 200))
     overrides = data.get("expiry_overrides") or {}
     out = []
 
@@ -741,77 +740,103 @@ def api_premium_surge():
             parsed = parse_rows(oc, chosen_expiry=used)
             rows = parsed.get("rows", [])
             under = parsed.get("underlying")
-            if not rows:
-                continue
+            if not rows or under is None: continue
 
-            cache_key = (sym, used)
-            if cache_key not in PREV_SURGE_CACHE:
-                PREV_SURGE_CACHE[cache_key] = {}
+            key = (sym, used)
+            if key not in PREV_SURGE_CACHE:
+                PREV_SURGE_CACHE[key] = {}
 
-            # For each strike, check CE and PE
+            lot_size = get_lot_size(sym)
+
             for r in rows:
                 strike = r.get("strike")
-                if strike is None:
-                    continue
-                # consider OTM only: CE if strike > underlying, PE if strike < underlying
-                if under is None:
-                    continue
+                if not strike or under is None: continue
 
-                # prepare cache entry
-                if strike not in PREV_SURGE_CACHE[cache_key]:
-                    PREV_SURGE_CACHE[cache_key][strike] = {"CE": None, "PE": None}
+                if strike not in PREV_SURGE_CACHE[key]:
+                    PREV_SURGE_CACHE[key][strike] = {"CE": deque(maxlen=5), "PE": deque(maxlen=5), "ts": None}
 
-                # CE check
+                cache = PREV_SURGE_CACHE[key][strike]
+
+                # === SUPER INTELLIGENT CE CHECK ===
                 ce = r.get("CE_ltp")
                 ce_vol = r.get("CE_vol") or 0
-                if ce is not None and strike > under:
-                    prev = PREV_SURGE_CACHE[cache_key][strike].get("CE")
-                    if prev and prev > 0:
-                        pct = (ce - prev) / prev * 100.0
-                        lots = (ce_vol or 0) / 50.0  # default lot size 50 (approx); adjust if needed
-                        if pct >= min_pct and lots >= min_lots:
-                            out.append({
-                                "symbol": sym,
-                                "strike": strike,
-                                "side": "CE",
-                                "prev": prev,
-                                "curr": ce,
-                                "pct": round(pct,2),
-                                "volume": int(ce_vol or 0),
-                                "lots": round(lots,2),
-                                "expiry": used
-                            })
-                    # update cache
-                    PREV_SURGE_CACHE[cache_key][strike]["CE"] = ce
+                if ce and strike > under + 10:  # True OTM only
+                    if cache["CE"]:
+                        prev = cache["CE"][-1]
+                        if prev > 0.1:  # ignore noise below 0.1
+                            pct = (ce - prev) / prev * 100.0
+                            speed = 0
+                            if len(cache["CE"]) >= 3:
+                                speed = (ce - cache["CE"][0]) / cache["CE"][0] * 100.0  # 3-tick momentum
 
-                # PE check
+                            lots = ce_vol / lot_size
+                            strength = "NUCLEAR" if pct >= 1000 else "EXTREME" if pct >= 500 else "STRONG" if pct >= 300 else "GOOD"
+
+                            if pct >= min_pct:
+                                out.append({
+                                    "symbol": sym,
+                                    "expiry": used,
+                                    "strike": int(strike),
+                                    "side": "CE",
+                                    "prev": round(prev, 2),
+                                    "curr": round(ce, 2),
+                                    "pct": round(pct, 1),
+                                    "speed": round(speed, 1),
+                                    "volume": int(ce_vol),
+                                    "lots": round(lots, 2),
+                                    "strength": strength,
+                                    "type": "OTM_BOMB" if lots < 5 else "INSTITUTIONAL_BOMB",
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                })
+                    cache["CE"].append(ce)
+
+                # === SAME FOR PE ===
                 pe = r.get("PE_ltp")
                 pe_vol = r.get("PE_vol") or 0
-                if pe is not None and strike < under:
-                    prev = PREV_SURGE_CACHE[cache_key][strike].get("PE")
-                    if prev and prev > 0:
-                        pct = (pe - prev) / prev * 100.0
-                        lots = (pe_vol or 0) / 50.0
-                        if pct >= min_pct and lots >= min_lots:
-                            out.append({
-                                "symbol": sym,
-                                "strike": strike,
-                                "side": "PE",
-                                "prev": prev,
-                                "curr": pe,
-                                "pct": round(pct,2),
-                                "volume": int(pe_vol or 0),
-                                "lots": round(lots,2),
-                                "expiry": used
-                            })
-                    PREV_SURGE_CACHE[cache_key][strike]["PE"] = pe
+                if pe and strike < under - 10:
+                    if cache["PE"]:
+                        prev = cache["PE"][-1]
+                        if prev > 0.1:
+                            pct = (pe - prev) / prev * 100.0
+                            speed = 0
+                            if len(cache["PE"]) >= 3:
+                                speed = (pe - cache["PE"][0]) / cache["PE"][0] * 100.0
+
+                            lots = pe_vol / lot_size
+                            strength = "NUCLEAR" if pct >= 1000 else "EXTREME" if pct >= 500 else "STRONG" if pct >= 300 else "GOOD"
+
+                            if pct >= min_pct:
+                                out.append({
+                                    "symbol": sym,
+                                    "expiry": used,
+                                    "strike": int(strike),
+                                    "side": "PE",
+                                    "prev": round(prev, 2),
+                                    "curr": round(pe, 2),
+                                    "pct": round(pct, 1),
+                                    "speed": round(speed, 1),
+                                    "volume": int(pe_vol),
+                                    "lots": round(lots, 2),
+                                    "strength": strength,
+                                    "type": "OTM_BOMB" if lots < 5 else "INSTITUTIONAL_BOMB",
+                                    "timestamp": datetime.now().strftime("%H:%M:%S")
+                                })
+                    cache["PE"].append(pe)
 
         except Exception as e:
-            logger.warning(f"premium_surge error for {sym}: {e}")
-            continue
+            logger.warning(f"Surge error {sym}: {e}")
 
-    return jsonify({"data": out})
+    # GOD LEVEL SORTING: NUCLEAR > EXTREME > SPEED > %
+    def scoreBomb(x):
+        score = x["pct"]
+        if x["strength"] == "NUCLEAR": score += 5000
+        if x["strength"] == "EXTREME": score += 2000
+        if x["speed"] > x["pct"] * 1.5: score += 1000
+        if x["type"] == "INSTITUTIONAL_BOMB": score += 500
+        return score
 
+    out.sort(key=scoreBomb, reverse=True)
+    return jsonify({"data": out[:50]})  # top 50 bombs only
 
 # ------------------ SocketIO Handlers ------------------
 @socketio.on("connect")
