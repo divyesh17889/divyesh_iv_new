@@ -792,18 +792,22 @@
           <div style="overflow-x:auto; margin-top:1rem;">
             <table class="table" style="min-width:800px;">
               <thead>
-                <tr>
-                  <th>Symbol</th>
-                  <th>Strike</th>
-                  <th>Side</th>
-                  <th>Prev</th>
-                  <th>Now</th>
-                  <th>% Jump</th>
-                  <th>Vol</th>
-                  <th>Lots</th>
-                  <th>Expiry</th>
-                </tr>
-              </thead>
+  <tr>
+    <th>Symbol</th>
+    <th>Strike</th>
+    <th>Side</th>
+    <th>Prev</th>
+    <th>Curr</th>
+    <th>Pct %</th>
+    <th>Strength</th>      <!-- NAYA -->
+    <th>Type</th>          <!-- NAYA -->
+    <th>Speed %</th>       <!-- NAYA -->
+    <th>Time</th>          <!-- NAYA -->
+    <th>Vol</th>
+    <th>Lots</th>
+    <th>Expiry</th>
+  </tr>
+</thead>
               <tbody id="surgeTbody"></tbody>
             </table>
           </div>
@@ -995,7 +999,7 @@
       try {
         const res = await fetch('/api/suggested');
         const data = await res.json();
-        state.selected = [...new Set([...state.selected, ...data.symbols.slice(0, 30)])];
+        state.selected = [...new Set([...state.selected, ...data.symbols.slice(0, 210)])];
         await ensureExpiries();
         renderWatch();
         savePrefs();
@@ -1139,7 +1143,7 @@
 
     async function scan() {
       const body = {
-        symbols: state.selected.slice(0, 50),
+        symbols: state.selected.slice(0, 210),
         threshold: Number(thr.value || 5),
         side: getActiveSide(),
         expiry_overrides: state.override
@@ -1192,7 +1196,7 @@
       strategyTbody.innerHTML = '<tr><td colspan="9">Scanning... please wait</td></tr>';
 
       const body = {
-        symbols: state.selected.slice(0, 50),
+        symbols: state.selected.slice(0, 210),
         buy_lots: buyLots,
         sell_lots: sellLots,
         target_diff: (targetMin + targetMax) / 2,
@@ -1380,7 +1384,7 @@ bias: b.strategy?.bias || "Neutral"
 async function fetchStraddleData() {
   try {
     const body = {
-      symbols: state.selected.slice(0, 50),
+      symbols: state.selected.slice(0, 210),
       threshold: 0,  // No IV spike needed
       distance_pct: 0,
       side: "ALL",
@@ -1403,7 +1407,7 @@ async function fetchStraddleData() {
     async function backgroundFetchOnce(){
   try{
     const body = {
-      symbols: state.selected.slice(0,80),
+      symbols: state.selected.slice(0,210),
       threshold: Number(thr.value || 5),
       distance_pct: Number(distInput.value || 0),
       side: getActiveSide(),
@@ -1571,17 +1575,27 @@ setInterval(() => {
                         item.pct >= 300 ? 'row-glow-ce' : '';
 
       tr.className = glowClass;
-      tr.innerHTML = `
-        <td><strong>${item.symbol}</strong></td>
-        <td>${item.strike}</td>
-        <td><span style="color:${item.side==='CE'?'#10b981':'#ef4444'};font-weight:600;">${item.side}</span></td>
-        <td>${item.prev != null ? Number(item.prev).toFixed(2) : '-'}</td>
-        <td style="font-weight:600; color:#10b981;">${item.curr != null ? Number(item.curr).toFixed(2) : '-'}</td>
-        <td style="font-weight:700; color:${pctColor};">${Number(item.pct).toFixed(1)}%</td>
-        <td>${item.volume || 0}</td>
-        <td>${(item.lots || 0).toFixed(2)}</td>
-        <td style="font-size:0.8rem; color:var(--text-muted);">${item.expiry || '-'}</td>
-      `;
+     const strengthColor = item.strength === 'NUCLEAR' ? '#ff0033' :
+                      item.strength === 'EXTREME' ? '#ff4400' :
+                      item.strength === 'STRONG' ? '#ff8800' : '#00ff00';
+
+const typeColor = item.type?.includes('INSTITUTIONAL') ? '#ff00ff' : '#ffff00';
+
+tr.innerHTML = `
+  <td><strong>${item.symbol}</strong></td>
+  <td>${item.strike}</td>
+  <td><span style="color:${item.side==='CE'?'#10b981':'#ef4444'};font-weight:700;">${item.side}</span></td>
+  <td>${item.prev != null ? item.prev.toFixed(2) : '-'}</td>
+  <td style="font-weight:600; color:#10b981;">${item.curr != null ? item.curr.toFixed(2) : '-'}</td>
+  <td style="font-weight:700; color:${pctColor};">${Number(item.pct).toFixed(1)}%</td>
+  <td><span style="padding:4px 10px; border-radius:6px; font-weight:800; color:white; background:${strengthColor}; box-shadow:0 0 10px ${strengthColor}66;">${item.strength || '-'}</span></td>
+  <td style="color:${typeColor}; font-weight:700;">${item.type || '-'}</td>
+  <td style="color:#fbbf24; font-weight:600;">${item.speed ? item.speed + '%' : '-'}</td>
+  <td style="font-size:0.85em; color:#cbd5e1;">${item.timestamp || ''}</td>
+  <td>${item.volume || 0}</td>
+  <td>${(item.lots || 0).toFixed(2)}</td>
+  <td style="font-size:0.8rem; color:var(--text-muted);">${item.expiry || '-'}</td>
+`;
 
       // Trigger alert on big jump
       if (item.pct >= 300) {
@@ -1600,7 +1614,7 @@ setInterval(() => {
   async function fetchPremiumSurge() {
     try {
       const body = {
-        symbols: surgeSymbol.value.trim() ? [surgeSymbol.value.trim().toUpperCase()] : state.selected.slice(0,80),
+        symbols: surgeSymbol.value.trim() ? [surgeSymbol.value.trim().toUpperCase()] : state.selected.slice(0,210),
         min_pct: Number(surgeMinPct.value || 200),
         min_lots: Number(surgeMinLots.value || 1),
         expiry_overrides: state.override || {}
@@ -1729,7 +1743,7 @@ setInterval(() => {
     // stop existing first
     stopSocketSubscription();
 
-    const symbols = state.selected.slice(0, 80);
+    const symbols = state.selected.slice(0, 210);
     const payload = {
       symbols: symbols,
       threshold: Number(thr.value || 5),
